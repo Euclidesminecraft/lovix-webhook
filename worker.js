@@ -1,3 +1,4 @@
+const PROJECT_ID = 'turing-lock-svd6f';
 const DB_ID =
   'ai-studio-lovixassistented-' +
   '4e84b65a-99e3-4d85-' +
@@ -36,78 +37,32 @@ function same(a, b) {
   return r === 0;
 }
 
-function b64url(buf) {
-  let s = '';
-  for (const b of new Uint8Array(buf)) {
-    s += String.fromCharCode(b);
-  }
-  return btoa(s)
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
-}
-
-const enc = (o) =>
-  b64url(
-    new TextEncoder().encode(JSON.stringify(o))
-  );
-
-async function getToken(sa) {
-  const t = Math.floor(Date.now() / 1000);
-  const head = enc({ alg: 'RS256', typ: 'JWT' });
-  const claim = enc({
-    iss: sa.client_email,
-    scope: 'https://www.googleapis.com' +
-      '/auth/datastore',
-    aud: 'https://oauth2.googleapis.com/token',
-    iat: t,
-    exp: t + 3000,
-  });
-  const pem = sa.private_key
-    .replace(/-----[^-]+-----/g, '')
-    .replace(/\s+/g, '');
-  const der = Uint8Array.from(
-    atob(pem),
-    (c) => c.charCodeAt(0)
-  );
-  const key = await crypto.subtle.importKey(
-    'pkcs8',
-    der,
-    { name: 'RSASSA-PKCS1-v1_5',
-      hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const data = head + '.' + claim;
-  const sig = await crypto.subtle.sign(
-    'RSASSA-PKCS1-v1_5',
-    key,
-    new TextEncoder().encode(data)
-  );
+async function getToken(env) {
   const r = await fetch(
-    'https://oauth2.googleapis.com/token',
+    'https://identitytoolkit.googleapis.com' +
+      '/v1/accounts:signInWithPassword' +
+      '?key=' + env.FIREBASE_API_KEY,
     {
       method: 'POST',
       headers: {
-        'Content-Type':
-          'application/x-www-form-urlencoded',
+        'Content-Type': 'application/json',
       },
-      body:
-        'grant_type=urn%3Aietf%3Aparams%3A' +
-        'oauth%3Agrant-type%3Ajwt-bearer' +
-        '&assertion=' + data + '.' +
-        b64url(sig),
+      body: JSON.stringify({
+        email: env.WEBHOOK_EMAIL,
+        password: env.WEBHOOK_PASSWORD,
+        returnSecureToken: true,
+      }),
     }
   );
   const j = await r.json();
-  if (!j.access_token) throw new Error('token');
-  return j.access_token;
+  if (!j.idToken) throw new Error('login');
+  return j.idToken;
 }
 
-function root(sa) {
+function root() {
   return (
     'https://firestore.googleapis.com/v1' +
-    '/projects/' + sa.project_id +
+    '/projects/' + PROJECT_ID +
     '/databases/' + DB_ID + '/documents/'
   );
 }
@@ -128,10 +83,12 @@ export default {
       return json({
         status: 200,
         online: true,
-        version: '2.1.0',
+        version: '2.2.0',
         hottokConfigured: !!env.HOTTOK,
         firebaseConfigured:
-          !!env.FIREBASE_SERVICE_ACCOUNT,
+          !!env.FIREBASE_API_KEY &&
+          !!env.WEBHOOK_EMAIL &&
+          !!env.WEBHOOK_PASSWORD,
       });
     }
     if (request.method !== 'POST') {
@@ -167,11 +124,8 @@ export default {
     }
 
     try {
-      const sa = JSON.parse(
-        env.FIREBASE_SERVICE_ACCOUNT
-      );
-      const tk = await getToken(sa);
-      const base = root(sa);
+      const tk = await getToken(env);
+      const base = root();
       const cust =
         base + 'customers/' +
         encodeURIComponent(email);
